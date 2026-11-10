@@ -14,3 +14,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+filterwarnings = [
+    # Prophet's own use of pandas APIs deprecated in pandas 3.1; not our code.
+    "ignore:The inplace keyword:Warning:prophet",
+]

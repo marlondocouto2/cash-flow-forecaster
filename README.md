@@ -1,39 +1,45 @@
 # Daily cash-flow forecaster with spike and holiday handling
 
-A money-transfer business has to pre-fund each payout corridor every morning. Two things
-break a simple seasonal forecast. **Irregular spikes** (a large corporate payout, a promotion)
-inflate the average the forecast is built on, so ordinary days get over-funded. **Holidays** in
-the receiving country cause a surge before, a drop on the day, and a catch-up after. This
-project starts from the simple weekday-seasonal model in
-[Project 1](https://github.com/marlondocouto2/weekday-seasonal-forecaster) and fixes each
-problem in turn: **diagnose → fix → measure → dollars saved**.
+A money-transfer business has to pre-fund each payout corridor every morning. Three things
+break a simple seasonal forecast:
+
+- **Random spikes** (a one-off corporate payout, a promotion) inflate the average the
+  forecast is built on, so ordinary days get over-funded.
+- **Scheduled spikes** (a payroll run every other Friday) are big but predictable, and a
+  weekday pattern can't see them.
+- **Holidays** in the receiving country cause a surge before, a drop on the day, and a
+  catch-up after.
+
+This project starts from the simple weekday-seasonal model in
+[Project 1](https://github.com/marlondocouto2/weekday-seasonal-forecaster) and adds one fix
+at a time. Each fix is measured the same way: **diagnose → fix → measure → dollars saved**.
 
 ## Headline result
 
-Across three corridors averaging $105M a day, the full model **cuts average forecast error
-by 30%**, from $7.5M to $5.3M per corridor-day at 7 days ahead. Each step does its own job:
+All five versions are run on the same walk-forward backtest, and every step adds accuracy.
+From the baseline to the final model, average error falls by **38%**, from $8.80M to
+$5.50M per corridor-day at 7 days ahead.
 
-- **Spike cleaning:** removes a **10% over-forecast on ordinary days**. Error on normal days
-  falls by 43%.
-- **Holiday effects:** cut error in **holiday windows by 46%**.
+The final model is Prophet with Fourier seasonalities and holiday windows, with a Gaussian
+mixture cleaning out random spikes. For the same 95% protection against shortfalls, it
+needs **$10.5M less cash a day** than the baseline. It also cuts the cost of over-funding
+from $503k to $105k a year, at a 5% cost of capital.
 
-Together they lower the **idle-cash cost from $418k to $100k a year**, a saving of **$318k a
-year** at a 5% cost of capital.
-
-![Error by model version and idle-cash cost](reports/figures/model_ladder.png)
+![MAE of each version and the improvement each step adds](reports/figures/accuracy_steps.png)
 
 ## Data
 
 All data is **simulated**: three corridors from the U.S. to Mexico, the Philippines and
-India, daily from 2021-01-01 to 2025-12-31
-([`data.py`](src/cashflow_forecaster/data.py)). Each is the product of known parts, and every
-part is saved in its own column so tests can check recovery:
+India, daily from 2021-01-01 to 2025-12-31, averaging $111M a day in total
+([`data.py`](src/cashflow_forecaster/data.py)). Each corridor is the product of known parts,
+and every part is saved in its own column so tests can check recovery:
 
 | Part | What is simulated |
 |---|---|
 | **Trend** | $25M / $12M / $15M a day at the start, growing 10–18% a year |
 | **Weekday, paydays, annual** | the same as Project 1: Fri ×1.25, Sun ×0.70; lifts on the 1st, 15th and last business day; a December peak |
-| **Spikes** | about 3 a month per corridor, at random; size 1.5–3× a normal day |
+| **Random spikes** | about 3 a month per corridor, at random; size 1.5–3× a normal day |
+| **Scheduled spikes** | a biweekly payroll run, ×1.6 every other Friday |
 | **Holidays** | the receiving country's calendar from the [`holidays`](https://pypi.org/project/holidays/) package, plus Mexico's Mother's Day (10 May), added by hand |
 | **Noise** | about 6% log-normal |
 
@@ -44,101 +50,122 @@ The true holiday effects depend on the holiday's tier:
 | **Major** (Christmas, New Year, Mother's Day, Diwali, Holi) | ×1.25 | ×1.40 | ×1.55 | ×0.60 | ×1.20 |
 | **Minor** (all other public holidays) | – | – | – | ×0.60 | ×1.15 |
 
-**Public data (optional):** `--source treasury` runs the same ladder on U.S. Treasury
-operating-cash withdrawals, using the U.S. federal holiday calendar. Results are under
-*Real data* below.
+## The five versions
 
-## Approach
-
-Every version keeps the same `fit(df)` / `predict(horizon or dates)` interface
+Every version has the same `fit(df)` / `predict(horizon or dates)` interface
 ([`models.py`](src/cashflow_forecaster/models.py)).
 
-1. **Baseline:** Project 1's `SeasonalWeekday`: a 28-day level × weekday factor ×
-   day-of-month factor.
-2. **+ Spike decomposition (Gaussian mixture):**
-   - **Normal-day fit:** for each past day, what a normal day would have been (a rolling
-     *median* level × the seasonal factors).
-   - **Residuals:** the log of actual over normal-day fit, for the last two years.
-   - **Mixture:** a two-component `GaussianMixture` is fitted on the residuals. Days most
-     likely to belong to the high component are labelled spikes.
-   - **Clean refit:** spike days are replaced by their normal-day value, and the level and
-     factors are re-estimated, so spikes stop inflating the baseline.
-   - **Spike allowance:** the model also reports the expected spike contribution (spike
-     probability × average spike size), for sizing a buffer.
-3. **+ Holiday effects:**
-   - **Features:** days before and after each holiday in the receiving country, and the
-     holiday's tier.
-   - **Effects:** each window position's effect is the median of actual ÷ normal-day fit
-     over past occurrences. It is shrunk toward 1.0 when there are few: `1 + n/(n+1) × (median − 1)`.
-   - **Applied:** the effects multiply the clean forecast. Holiday windows are kept out of
-     the mixture and the baseline, so pre-holiday surges aren't mistaken for spikes.
-4. **No leakage:** every model is refit at every origin using data up to that day only.
-   Holiday calendars are known in advance, so using future holiday dates is allowed.
+| # | Version | What it adds | Libraries |
+|---|---|---|---|
+| 1 | **Baseline** | Project 1: 28-day level × weekday factor × day-of-month factor | pandas |
+| 2 | **+ Spike GMM** | detects random spikes and re-estimates the baseline without them | scikit-learn `GaussianMixture` |
+| 3 | **+ Holidays** | holiday effects learned from past occurrences of each holiday window | `holidays` |
+| 4 | **Prophet + Fourier** | a different family: Prophet trend + Fourier seasonalities + holiday windows | `prophet` |
+| 5 | **Prophet + Fourier + GMM** | version 4, with the Gaussian mixture cleaning random spikes from Prophet's fit | `prophet`, scikit-learn |
 
-![Residual histogram with fitted mixture components](reports/figures/residual_gmm.png)
+### Two ways to handle a spike
+
+There are two opposite ways to deal with a spike, and they work best in combination:
+
+- **As seasonality (versions 4–5).** Fourier terms are sine and cosine waves. With enough of
+  them at the right period, they can draw any repeating shape, including a sharp peak every
+  14 days.
+  - **Terms used:** weekly (order 3), biweekly with a 14-day period (order 7), monthly with a
+    30.44-day period (order 15) and yearly (order 20), all on log volume.
+  - **Result:** scheduled spikes are *forecast*, not just tolerated.
+- **As a separate regime (versions 2, 3 and 5).** Random spikes can't be forecast. What
+  matters is to keep them out of the baseline.
+  - **How:** a two-component Gaussian mixture is fitted on the model's log residuals. Days
+    in the high component are labelled spikes and removed, and the model is refitted.
+  - **Spike allowance:** the mixture's weight × average spike size is the expected spike
+    contribution, for sizing a buffer.
+- **Why the order matters in version 5:** the mixture runs on *Prophet's* residuals, which
+  already account for the payroll Fridays. So it removes only the spikes the seasonality
+  can't explain. In Mexico it flags 0 of 69 payroll Fridays and every random spike.
+
+![Final model's residuals with the fitted mixture](reports/figures/residual_gmm.png)
+
+### Holidays
+
+- **Versions 2–3:** each window position (3 to 1 days before a major holiday, the day itself,
+  the day after) gets a multiplicative effect. It is the median of actual ÷ normal-day fit
+  over past occurrences, shrunk toward 1 when there are few: `1 + n/(n+1) × (median − 1)`.
+- **Versions 4–5:** the same windows are passed to Prophet as holiday features, pooled by
+  tier.
+- **Calendar data:** holiday calendars are known in advance, so using future holiday dates
+  is not leakage.
 
 ## Evaluation
 
-**Backtest:** a walk-forward backtest over the last 12 months (calendar 2025). Each version
-is refit at every daily origin and forecasts 1, 7 and 30 days ahead, giving 1,095 scored
-corridor-days per version and horizon. Code:
+**Backtest:** a walk-forward backtest over the last 12 months (calendar 2025), at 1, 7 and 30
+days ahead. That gives 1,095 scored corridor-days per version and horizon. Code:
 [`evaluate.py`](src/cashflow_forecaster/evaluate.py).
 
-**Day types:** errors are broken down by the type of day being forecast:
+- **Refits:** versions 1–3 are refit at every daily origin. The Prophet versions are refit
+  every 7 origins, since each fit takes about 0.25 seconds, and the latest fit is reused in
+  between. Neither ever sees data after the origin.
+- **Day types:** errors are broken down by the type of day being forecast:
 
-- **Normal:** 908 days.
-- **Spike:** 82 days.
-- **Holiday window:** 105 days (3 days before through 1 day after).
+  | Day type | Days |
+  |---|---|
+  | Normal | 842 |
+  | Random spike | 82 |
+  | Scheduled spike | 66 |
+  | Holiday window | 105 |
 
-**Dollar metrics:** computed on the daily total across corridors, since that's what gets
-funded.
+- **Dollar metrics:** computed on the daily total across corridors, since that's what gets
+  funded.
+  - **Required buffer:** the 95th percentile of the daily shortfall.
+  - **Cash held:** forecast + buffer, i.e. the cash set aside to cover 95% of days.
+  - **Idle-cash cost:** average over-forecast × 5% a year.
 
-- **Required buffer:** the 95th percentile of the daily shortfall (`max(actual − forecast, 0)`).
-- **Average cash held:** forecast + required buffer. This is the cash set aside to cover 95%
-  of days.
-- **Idle-cash cost:** average over-forecast × 5% a year.
-
-**Model ladder, 7 days ahead** (all horizons are in [`reports/results.csv`](reports/results.csv)):
+**Results, 7 days ahead** (all horizons are in [`reports/results.csv`](reports/results.csv)):
 
 ![Model ladder table](reports/figures/results_table.png)
 
+![Error by version and type of day](reports/figures/model_ladder.png)
+
 ### What each step fixed
 
-- **Spikes were inflating the baseline.** About 1 day in 10 is a spike, at roughly twice
-  normal volume. A level built from a plain average therefore runs about 10% high on every
-  ordinary day. After the mixture removes them, the bias on normal days falls from **+10.4%
-  to +0.3%**, and normal-day error drops from **$4.27M to $2.43M**.
-- **Holidays were invisible to the baseline.** It predicted an ordinary Friday on the day
-  before Mother's Day. The holiday module learns the surge, the drop and the catch-up from
-  past years, and holiday-window error falls from **$14.9M to $8.1M**.
+| Step | Problem | Evidence |
+|---|---|---|
+| **2. + Spike GMM** | Random spikes inflated the baseline, which ran **13% high on ordinary days**. | Bias falls to +3%; normal-day error falls from $5.07M to $2.98M. |
+| **3. + Holidays** | The baseline predicted an ordinary day before Mother's Day. | Holiday-window error falls from $15.4M to $9.5M. |
+| **4. Prophet + Fourier** | Payroll Fridays were invisible to a weekday pattern. Removing them as "spikes" in steps 2–3 made it worse. | Scheduled-spike error falls from $15.4M to $6.2M. |
+| **5. + GMM on Prophet** | Random spikes now inflated Prophet's fit instead: +8% on ordinary days. | Bias falls to +0.5%; normal-day error is $1.98M, the lowest of any version. |
 
-![Actual vs baseline vs full model around two holidays](reports/figures/holiday_zoom.png)
+One day shows it well. The day before Mother's Day 2025 was also a payroll Friday, with
+$139M actual in Mexico. The 7-day-ahead forecasts were:
 
-### What it can't fix, and why the buffer goes up
+- **Baseline:** $70M.
+- **Version 3:** $101M.
+- **Version 5:** $141M.
 
-- **Spike days get slightly worse** ($33.4M → $35.9M). Spikes are random, so no calendar
-  model can predict them. The baseline's inflated level just happened to sit closer to them.
-- **The 95% buffer rises** ($57.0M → $64.2M). On about 23% of days at least one corridor
-  spikes, so the 95th-percentile shortfall is set by spikes. The baseline's 10% over-forecast
-  was quietly acting as part of that buffer. Judged on the buffer alone, a biased forecast
-  looks better than it is.
-- **Total cash held barely moves.** The like-for-like comparison is average cash held
-  (forecast + buffer), which falls slightly from **$161.5M to $159.8M**.
-- **Where the real saving is:** cash is now right-sized on the 75% of days that are normal,
-  and the spike risk is a separate, explicit number (the GMM's spike probability × size).
-  That's the input for deciding whether to hold spike cover as cash or as a credit line.
+![Around two holidays: actual vs baseline vs step 3 vs final](reports/figures/holiday_zoom.png)
+
+![Biweekly payroll Fridays: the Fourier terms pick up the 14-day cycle](reports/figures/scheduled_zoom.png)
+
+### What no version fixes
+
+- **Random spike days** stay at $36–39M error in every version. They're random by
+  construction.
+- **The required buffer is spike-driven:** on about a quarter of days at least one corridor
+  has a random spike, so those spikes set the 95th-percentile shortfall. Versions that run
+  biased high look better on the buffer alone, because the bias acts as a hidden cushion.
+- **Cash held (forecast + buffer) is the fair comparison.** It falls from $174.7M to $164.2M
+  a day.
 
 ### Real data
 
-On U.S. Treasury withdrawals (`--source treasury`, 12 months to November 2026), spike
-cleaning lowers the 7-day required buffer from $53.1B to $48.0B. It also lowers average cash
-held from $86.6B to $79.5B. However, MAE rises by about 5%.
+The same five versions were run on U.S. Treasury operating-cash withdrawals
+(`--source treasury`, 12 months to November 2026). The Treasury's large days are mostly
+**scheduled**: tax dates, benefit payment days, month-end transfers. As expected, the
+Fourier approach is the one that helps there:
 
-Treasury's large days are mostly **scheduled**, not random: tax dates and benefit payment
-days. A mixture model treats them as random spikes. The fix is to model them as known
-calendar events, as the holiday module does. On this data the holiday step is roughly
-neutral: the Treasury publishes no statement on federal holidays, so only the days around
-them can be learned.
+- **Steps 2–3:** they make Treasury error *worse* than the baseline (+5%), because they treat
+  scheduled days as random.
+- **Step 4 (Prophet + Fourier):** cuts error by 12.5% against step 3. The final model ends
+  10% below the baseline.
 
 ## How to run
 
@@ -154,38 +181,39 @@ pip install -r requirements.txt
 python scripts/run_pipeline.py && pytest
 ```
 
-The pipeline takes about 35 seconds. It writes `reports/results.csv`, every forecast in
-`reports/backtest_forecasts.csv.gz`, and the charts in `reports/figures/`. Add
-`--source treasury` to run on public data (needs internet; results go to
-`reports/treasury/`). Settings are in [`config.py`](src/cashflow_forecaster/config.py).
-For a guided tour, see [`notebooks/walkthrough.ipynb`](notebooks/walkthrough.ipynb).
+The pipeline runs all five versions in parallel across corridors in about a minute. It
+prints what each version adds, writes `reports/results.csv` and every forecast in
+`reports/backtest_forecasts.csv.gz`, and saves the charts in `reports/figures/`.
+
+**Options:**
+
+- **Some versions only:** `--versions 1,3,5`.
+- **Public data:** `--source treasury` (needs internet; results go to `reports/treasury/`).
+
+Settings are in [`config.py`](src/cashflow_forecaster/config.py). For a guided tour, see
+[`notebooks/walkthrough.ipynb`](notebooks/walkthrough.ipynb).
 
 ### Tests
 
-- **Spike recovery:** the mixture finds at least 80% of the true spike days in every
-  corridor. Measured recall is 100%, 100% and 92.5%.
+- **Spike recovery:** the mixture finds at least 80% of true random spikes in every corridor
+  (measured 92–100%). Fewer than 2% of ordinary days are flagged.
+- **Spike recovery in the final model:** run on Prophet's residuals, the mixture still finds
+  at least 80% of random spikes. It flags fewer than 10% of payroll Fridays (measured 0–2%).
+- **Fourier terms:** they forecast payroll Fridays within 15% of the true ×1.6, while step 3
+  can't see them.
 - **Holiday recovery:** every estimated holiday effect is within ±15% of the true effect.
-  The mean error is 2–5%. The largest gap is the Philippines' major-holiday drop: 0.69
-  against a true 0.60. Two of its ten examples are spike days, and 1 January is also a
-  payday.
-- **No leakage:** for all three versions, forecasts made at any origin are unchanged when
-  every later value is altered.
-- **The ladder:**
-  - Spike cleaning cuts normal-day error by more than 20%.
-  - Holiday effects cut holiday-window error by more than 20%.
-  - Overall MAE and idle-cash cost fall at each step.
-- **Calendar and metrics:** the holiday-window precedence rules and the metric definitions
-  are checked directly.
+- **No leakage:** for all versions, including Prophet with weekly refits, forecasts made at
+  any origin are unchanged when every later value is altered.
+- **The ladder:** each step cuts error on its target days, overall MAE falls at each step,
+  and version 5 beats version 3.
 
 ## What I'd do next
 
-- **Known big days:** model scheduled large days (tax dates, benefit payments) as calendar
-  events. This is the main gap on the Treasury data.
-- **Spike-aware buffer:** size a separate spike buffer from the mixture (probability ×
-  size distribution) and compare holding it as cash against a credit line.
-- **Library comparison:** compare with statsmodels `UnobservedComponents` or Prophet using
-  the same holiday regressors.
-- **Faster refits:** refit the mixture and holiday effects weekly rather than daily; they
-  change slowly.
+- **Learn the periods:** pick Fourier periods and orders by cross-validation instead of
+  fixing them, or detect the spike period from the residuals' spectrum.
+- **Spike-aware buffer:** size a separate spike buffer from the mixture (probability × size
+  distribution), and compare holding it as cash against a credit line.
+- **Treasury calendar:** add known Treasury events (tax dates, benefit payment days) as
+  holiday-style regressors.
 - **Next project:** use these volume forecasts as the input for FX margin
   (`fx-margin-forecaster`).

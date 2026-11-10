@@ -2,7 +2,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from cashflow_forecaster.data import TRUE_HOLIDAY_EFFECTS, generate_flows
+from cashflow_forecaster.data import (
+    SCHEDULED_FACTOR,
+    SCHEDULED_FIRST,
+    TRUE_HOLIDAY_EFFECTS,
+    generate_flows,
+)
 from cashflow_forecaster.evaluate import (
     accuracy,
     backtest_all,
@@ -12,7 +17,12 @@ from cashflow_forecaster.evaluate import (
     walk_forward,
 )
 from cashflow_forecaster.features import holiday_window
-from cashflow_forecaster.models import HolidayAdjusted, SeasonalWeekday, SpikeAdjusted
+from cashflow_forecaster.models import (
+    HolidayAdjusted,
+    ProphetFourier,
+    SeasonalWeekday,
+    SpikeAdjusted,
+)
 
 CORRIDORS = ["MX", "PH", "IN"]
 
@@ -42,7 +52,7 @@ def test_generator_is_reproducible_and_volume_is_product_of_parts():
     b = generate_flows("2023-01-01", "2023-06-30", seed=3)
     pd.testing.assert_frame_equal(a, b)
     parts = ["trend", "weekday_factor", "month_factor", "annual_factor", "holiday_factor",
-             "spike_factor", "noise"]
+             "scheduled_factor", "spike_factor", "noise"]
     np.testing.assert_allclose(a["volume"], a[parts].prod(axis=1))
 
 
@@ -70,8 +80,10 @@ def test_gmm_recovers_at_least_80pct_of_spike_days(flows, fitted, corridor):
     true_spikes = truth["is_spike"] & outside_holidays
     found = model.spike_flags_ & true_spikes
     assert found.sum() / true_spikes.sum() >= 0.80
-    # And it isn't simply flagging everything.
-    assert model.spike_flags_[outside_holidays].mean() < 0.15
+    # And it isn't flagging ordinary days: almost every flag is a true (random or scheduled) spike.
+    any_spike = truth["is_spike"] | truth["is_scheduled"]
+    false_flags = model.spike_flags_ & ~any_spike & outside_holidays
+    assert false_flags.sum() / outside_holidays.sum() < 0.02
 
 
 @pytest.mark.parametrize("corridor", CORRIDORS)
@@ -126,7 +138,7 @@ def test_metric_definitions():
 @pytest.fixture(scope="module")
 def ladder(flows) -> pd.DataFrame:
     """A shorter version of the pipeline's backtest: 7-day horizon, all corridors."""
-    bt = backtest_all(flows, horizons=(7,), test_periods=365)
+    bt = backtest_all(flows, horizons=(7,), test_periods=365, versions=[1, 2, 3])
     return ladder_table(bt).set_index("model")
 
 
@@ -139,3 +151,57 @@ def test_each_step_reduces_error_on_its_target_days(ladder):
     # Overall, each step helps, and idle cash falls.
     assert base["MAE"] > gmm["MAE"] > full["MAE"]
     assert base["idle_cash_cost_per_year"] > gmm["idle_cash_cost_per_year"] > full["idle_cash_cost_per_year"]
+
+
+# ----------------------------------------------------------------- Prophet + Fourier (versions 4-5)
+def _payroll_ratio(pred: pd.Series) -> float:
+    fridays = pred[pred.index.day_of_week == 4]
+    payroll = (fridays.index - pd.Timestamp(SCHEDULED_FIRST)).days % 14 == 0
+    return fridays[payroll].mean() / fridays[~payroll].mean()
+
+
+@pytest.fixture(scope="module")
+def prophet_mx(flows) -> ProphetFourier:
+    series = _series(flows, "MX")
+    return ProphetFourier(country="MX", clean_spikes=True).fit(series[series["date"] <= "2025-06-30"][["date", "volume"]])
+
+
+def test_fourier_terms_forecast_the_payroll_fridays(flows, prophet_mx):
+    """Scheduled spikes are seasonality to the Fourier model, invisible to the baseline."""
+    dates = pd.date_range("2025-07-07", periods=56)  # 8 weeks, no Mexican holidays
+    series = _series(flows, "MX")
+    step3 = HolidayAdjusted(country="MX").fit(series[series["date"] <= "2025-06-30"][["date", "volume"]])
+    assert _payroll_ratio(step3.predict(dates)) < 1.25
+    assert abs(_payroll_ratio(prophet_mx.predict(dates)) / SCHEDULED_FACTOR - 1) < 0.15
+
+
+def test_gmm_on_prophet_residuals_keeps_scheduled_spikes(flows, prophet_mx):
+    truth = _series(flows, "MX").set_index("date").loc[prophet_mx.spike_flags_.index]
+    outside = truth["holiday_tier"].isna()
+    random_spikes = truth["is_spike"] & outside
+    scheduled_only = truth["is_scheduled"] & ~truth["is_spike"] & outside
+    assert (prophet_mx.spike_flags_ & random_spikes).sum() / random_spikes.sum() >= 0.80
+    assert (prophet_mx.spike_flags_ & scheduled_only).sum() / scheduled_only.sum() < 0.10
+
+
+def test_prophet_no_leakage_with_weekly_refits(flows):
+    df = _series(flows, "MX")
+    df = df[df["date"] >= "2023-01-01"].reset_index(drop=True)
+    cutoff = pd.Timestamp("2025-11-30")
+    altered = df.copy()
+    future = altered["date"] > cutoff
+    altered.loc[future, "volume"] = altered.loc[future, "volume"] * 3.0 + 1e7
+    factory = lambda: ProphetFourier(country="MX", clean_spikes=True)  # noqa: E731
+    a = walk_forward(df, factory, horizons=(1, 7), test_periods=30)
+    b = walk_forward(altered, factory, horizons=(1, 7), test_periods=30)
+    known = a["origin"] <= cutoff
+    assert known.sum() > 0 and (~known).sum() > 0
+    np.testing.assert_allclose(a.loc[known, "forecast"], b.loc[known, "forecast"], rtol=1e-6)
+
+
+def test_final_model_beats_step_3_in_a_short_backtest(flows):
+    mx = flows[flows["corridor"] == "MX"]
+    bt = backtest_all(mx, horizons=(7,), test_periods=120, versions=[3, 5])
+    t = ladder_table(bt).set_index("model")
+    assert t.at["5. Prophet + Fourier + GMM", "MAE"] < t.at["3. + Holidays", "MAE"]
+    assert t.at["5. Prophet + Fourier + GMM", "MAE_scheduled"] < 0.6 * t.at["3. + Holidays", "MAE_scheduled"]

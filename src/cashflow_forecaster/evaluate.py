@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Callable, Iterable
+import os
+from concurrent.futures import ProcessPoolExecutor
+from typing import Callable, Iterable, Sequence
 
 import numpy as np
 import pandas as pd
@@ -10,7 +12,7 @@ import pandas as pd
 from .config import CONFIG
 from .models import BaseModel, model_ladder
 
-DAY_TYPES = ["normal", "spike", "holiday"]
+DAY_TYPES = ["normal", "spike", "scheduled", "holiday"]
 
 
 def walk_forward(
@@ -21,17 +23,22 @@ def walk_forward(
 ) -> pd.DataFrame:
     """Rolling-origin backtest for one series.
 
-    At every origin the model is refit on rows up to and including the origin only, then
-    forecasts the next max(horizons) steps. Rows are kept where the target falls in the
-    last `test_periods` observations and the step ahead is in `horizons`.
+    The model is refit on rows up to and including the origin only, then forecasts the
+    next max(horizons) steps. Models with `refit_every > 1` (Prophet) are refit every that
+    many origins; in between, the latest fit is reused, so it never sees data after the
+    origin either. Rows are kept where the target falls in the last `test_periods`
+    observations and the step ahead is in `horizons`.
     """
     df = df[["date", "volume"]].sort_values("date").reset_index(drop=True)
     horizons = sorted(set(horizons))
     n, h_max = len(df), max(horizons)
     test_start = n - test_periods
     records = []
-    for origin in range(test_start - h_max, n - 1):
-        model = model_factory().fit(df.iloc[: origin + 1])
+    first = test_start - h_max
+    model = None
+    for origin in range(first, n - 1):
+        if model is None or (origin - first) % model.refit_every == 0:
+            model = model_factory().fit(df.iloc[: origin + 1])
         targets = [origin + h for h in horizons if test_start <= origin + h < n]
         if not targets:
             continue
@@ -47,24 +54,43 @@ def walk_forward(
     return out
 
 
+def _run(args) -> pd.DataFrame:
+    corridor, series, factory, horizons, test_periods = args
+    bt = walk_forward(series, factory, horizons, test_periods)
+    bt.insert(0, "corridor", corridor)
+    return bt
+
+
 def backtest_all(
     flows: pd.DataFrame, horizons: Iterable[int] = CONFIG.horizons,
-    test_periods: int = CONFIG.backtest_days,
+    test_periods: int = CONFIG.backtest_days, versions: Sequence[int] | None = None,
+    n_jobs: int | None = None,
 ) -> pd.DataFrame:
-    """Run every ladder version on every corridor and label each target day's type."""
-    frames = []
+    """Run the chosen ladder versions on every corridor (in parallel) and label day types.
+
+    Day type of each target day: holiday window > random spike > scheduled spike > normal.
+    """
+    horizons = tuple(horizons)
+    tasks = []
     for corridor, g in flows.groupby("corridor", sort=False):
-        g = g.sort_values("date").reset_index(drop=True)
-        for factory in model_ladder(corridor):
-            bt = walk_forward(g, factory, horizons, test_periods)
-            bt.insert(0, "corridor", corridor)
-            frames.append(bt)
+        g = g[["date", "volume"]].sort_values("date").reset_index(drop=True)
+        for factory in model_ladder(corridor, versions):
+            tasks.append((corridor, g, factory, horizons, test_periods))
+    n_jobs = n_jobs or min(len(tasks), os.cpu_count() or 1)
+    if n_jobs > 1:
+        with ProcessPoolExecutor(n_jobs) as pool:
+            frames = list(pool.map(_run, tasks))
+    else:
+        frames = [_run(t) for t in tasks]
     bt = pd.concat(frames, ignore_index=True)
-    truth = flows[["corridor", "date", "is_spike", "holiday_tier", "holiday_offset"]]
+
+    cols = ["corridor", "date", "is_spike", "is_scheduled", "holiday_tier", "holiday_offset"]
+    truth = flows[[c for c in cols if c in flows.columns]]
     bt = bt.merge(truth, on=["corridor", "date"], how="left")
+    flag = lambda c: bt[c].fillna(False).astype(bool) if c in bt else False  # noqa: E731
     bt["day_type"] = np.select(
-        [bt["holiday_tier"].notna(), bt["is_spike"].fillna(False).astype(bool)],
-        ["holiday", "spike"], default="normal",
+        [bt["holiday_tier"].notna(), flag("is_spike"), flag("is_scheduled")],
+        ["holiday", "spike", "scheduled"], default="normal",
     )
     return bt
 
@@ -113,7 +139,11 @@ def ladder_table(bt: pd.DataFrame) -> pd.DataFrame:
         row["idle_cash_cost_per_year"] = idle_cash_cost(tot["actual"], tot["forecast"])
         rows.append(row)
     out = pd.DataFrame(rows).sort_values(["horizon", "model"]).reset_index(drop=True)
-    base = out.groupby("horizon")["idle_cash_cost_per_year"].transform("first")
+    by_h = out.groupby("horizon")
+    # How much each version adds: MAE change vs the previous version and vs the baseline.
+    out["MAE_vs_previous_pct"] = (by_h["MAE"].pct_change() * 100).round(1)
+    out["MAE_vs_baseline_pct"] = ((out["MAE"] / by_h["MAE"].transform("first") - 1) * 100).round(1)
+    base = by_h["idle_cash_cost_per_year"].transform("first")
     out["idle_cash_saving_vs_baseline"] = base - out["idle_cash_cost_per_year"]
     return out
 
