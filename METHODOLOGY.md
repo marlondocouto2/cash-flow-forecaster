@@ -13,9 +13,11 @@ This project builds on the base forecast from
 [Project 1: weekday-seasonal forecaster](https://github.com/marlondocouto2/weekday-seasonal-forecaster).
 That model forecasts a day's volume as
 
-$$\hat{y}_t = L \times W_{\text{weekday}(t)} \times M_{\text{bucket}(t)}$$
+```math
+\hat{y}_t = L \times W_{\text{weekday}(t)} \times M_{\text{bucket}(t)}
+```
 
-where $L$ is a recent level, $W$ a day-of-week factor and $M$ a day-of-month (payday) factor.
+where $`L`$ is a recent level, $`W`$ a day-of-week factor and $`M`$ a day-of-month (payday) factor.
 It is small and explainable, and in Project 1 it beat naive baselines by 35–58%.
 
 Its estimation code is carried over here unchanged as **version 1, the baseline**. Every later
@@ -25,7 +27,7 @@ spike-detection idea, so the gain from each step can be read off one table.
 
 The base forecast breaks on three kinds of day:
 
-- **Random spikes:** one-off large flows. They inflate the level $L$, so every ordinary day is
+- **Random spikes:** one-off large flows. They inflate the level $`L`$, so every ordinary day is
   over-forecast.
 - **Scheduled spikes:** a payroll run every other Friday. A weekday factor can only average
   payroll and ordinary Fridays together.
@@ -36,25 +38,46 @@ Each version below targets one of these.
 
 ## 2. Data
 
+### 2.0 Where the data comes from
+
+No data files are stored in the repo. Every run creates the data in memory with
+`generate_flows()` in [`data.py`](src/cashflow_forecaster/data.py), which takes under a
+second, so the same seed always gives the same data on any machine.
+
+The generator reuses Project 1's building blocks: trend, weekday, payday, annual pattern and
+noise, with the same weekday, payday, annual and noise settings. The code is copied rather than
+imported, so this repo runs on its own. The data itself is **not** the same as Project 1's:
+
+| | Project 1 | This project |
+|---|---|---|
+| **Series** | one aggregate series | three corridors (MX, PH, IN), simulated separately |
+| **Scale and growth** | \$50M a day, +15% a year | \$25M / \$12M / \$15M a day, +12% / +10% / +18% a year |
+| **Seed** | 42 | 42, 43, 44 (one per corridor) |
+| **Extra parts** | none | random spikes, biweekly payroll Fridays, holidays |
+
+Both projects can optionally run on the same public series, U.S. Treasury withdrawals (2.3).
+
 ### 2.1 Synthetic corridors (default)
 
 Three payout corridors are simulated (U.S. to Mexico, the Philippines and India), daily from
 2021-01-01 to 2025-12-31, with seed 42. Each day's volume is a product of known parts:
 
-$$y_t = T_t \times W_t \times M_t \times A_t \times H_t \times S^{\text{sched}}_t \times S^{\text{rand}}_t \times \varepsilon_t$$
+```math
+y_t = T_t \times W_t \times M_t \times A_t \times H_t \times S^{\text{sched}}_t \times S^{\text{rand}}_t \times \varepsilon_t
+```
 
 Every part is stored in its own column, so tests can check how well each model recovers it.
 
 | Part | Definition |
 |---|---|
-| **Trend** $T_t$ | $T_0 (1+g)^{\text{years}}$, with $T_0$ = \$25M / \$12M / \$15M a day and $g$ = 12% / 10% / 18% a year (MX / PH / IN) |
-| **Weekday** $W_t$ | Mon 1.10, Tue 1.00, Wed 0.95, Thu 1.00, Fri 1.25, Sat 0.80, Sun 0.70, rescaled to average 1 |
-| **Paydays** $M_t$ | ×1.25 on the 1st, ×1.12 on the 2nd, ×1.05 on the 3rd; ×1.20 on the 15th, ×1.06 on the 14th and 16th; ×1.30 on the last business day, ×1.08 the day before |
-| **Annual** $A_t$ | $\left(1 + 0.04 \sin\frac{2\pi(d-80)}{365.25}\right)\left(1 + 0.12\, e^{-\frac{1}{2}\left(\frac{d - d_{\text{Dec 20}}}{6}\right)^2}\right)$, where $d$ is the day of the year: a mild yearly wave plus a December peak |
-| **Holidays** $H_t$ | see 2.2 |
-| **Scheduled spikes** $S^{\text{sched}}_t$ | ×1.6 every 14 days, on Fridays, from 2021-01-08 (a biweekly payroll run) |
-| **Random spikes** $S^{\text{rand}}_t$ | with probability $3/30.44$ a day (about 3 a month), a multiplier drawn uniformly from 1.5 to 3.0; otherwise 1 |
-| **Noise** $\varepsilon_t$ | log-normal, $\sigma = 0.06$ |
+| **Trend** $`T_t`$ | $`T_0 (1+g)^{\text{years}}`$, with $`T_0`$ = \$25M / \$12M / \$15M a day and $`g`$ = 12% / 10% / 18% a year (MX / PH / IN) |
+| **Weekday** $`W_t`$ | Mon 1.10, Tue 1.00, Wed 0.95, Thu 1.00, Fri 1.25, Sat 0.80, Sun 0.70, rescaled to average 1 |
+| **Paydays** $`M_t`$ | ×1.25 on the 1st, ×1.12 on the 2nd, ×1.05 on the 3rd; ×1.20 on the 15th, ×1.06 on the 14th and 16th; ×1.30 on the last business day, ×1.08 the day before |
+| **Annual** $`A_t`$ | $`\left(1 + 0.04 \sin\frac{2\pi(d-80)}{365.25}\right)\left(1 + 0.12\, e^{-\frac{1}{2}\left(\frac{d - d_{\text{Dec 20}}}{6}\right)^2}\right)`$, where $`d`$ is the day of the year: a mild yearly wave plus a December peak |
+| **Holidays** $`H_t`$ | see 2.2 |
+| **Scheduled spikes** $`S^{\text{sched}}_t`$ | ×1.6 every 14 days, on Fridays, from 2021-01-08 (a biweekly payroll run) |
+| **Random spikes** $`S^{\text{rand}}_t`$ | with probability $`3/30.44`$ a day (about 3 a month), a multiplier drawn uniformly from 1.5 to 3.0; otherwise 1 |
+| **Noise** $`\varepsilon_t`$ | log-normal, $`\sigma = 0.06`$ |
 
 Random and scheduled spikes are deliberately different. Random spikes are a separate,
 unpredictable regime. Scheduled spikes repeat on a fixed 14-day cycle, so a model that
@@ -101,35 +124,35 @@ rows up to the forecast origin.
 
 ### 3.1 Version 1: Baseline (the Project 1 base forecast)
 
-- **Weekday factors $W$:** each day is first divided by its month-position factor, then by the
+- **Weekday factors $`W`$:** each day is first divided by its month-position factor, then by the
   centred 7-day mean around it. That mean contains exactly one of each weekday, so trend and
   slow seasonal bumps cancel out. The factors are the average ratio for each weekday over the
   last **12 weeks**, normalized to average 1. The centred mean only uses training data: the last
   three days of history simply have no centred value yet.
-- **Month-position factors $M$:** the same ratio-to-average idea for five day-of-month buckets
+- **Month-position factors $`M`$:** the same ratio-to-average idea for five day-of-month buckets
   (days 1–3, 4–13, 14–16, 17 to month end minus 3, and the last 3 days), over the last
   **364 days**. They are normalized so the day-weighted average is 1.
-- **Alternating estimation:** $W$ and $M$ distort each other (a payday that falls on a Friday
+- **Alternating estimation:** $`W`$ and $`M`$ distort each other (a payday that falls on a Friday
   inflates Friday), so they are estimated in turn for three passes.
-- **Level $L$:** the mean of the last **28 days** after dividing out $W$ and $M$.
-- **Forecast:** $\hat{y}_t = L \cdot W_{\text{weekday}(t)} \cdot M_{\text{bucket}(t)}$, flat
+- **Level $`L`$:** the mean of the last **28 days** after dividing out $`W`$ and $`M`$.
+- **Forecast:** $`\hat{y}_t = L \cdot W_{\text{weekday}(t)} \cdot M_{\text{bucket}(t)}`$, flat
   in level over the horizon.
 
 ### 3.2 Version 2: + spike decomposition with a Gaussian mixture
 
 1. **Normal-day fit.** For each past day, estimate what a normal day would have been:
-   $\tilde{y}_t = \operatorname{median}_{28}(y / (W M))_t \cdot W_t M_t$. This is a centred
+   $`\tilde{y}_t = \operatorname{median}_{28}(y / (W M))_t \cdot W_t M_t`$. This is a centred
    28-day rolling *median* of the deseasonalized series times the seasonal factors. The median
    keeps spikes from pulling it up.
-2. **Residuals.** $r_t = \log y_t - \log \tilde{y}_t$, over the last **730 days**.
-3. **Mixture.** A two-component `sklearn.mixture.GaussianMixture` is fitted to $r_t$. The
+2. **Residuals.** $`r_t = \log y_t - \log \tilde{y}_t`$, over the last **730 days**.
+3. **Mixture.** A two-component `sklearn.mixture.GaussianMixture` is fitted to $`r_t`$. The
    component with the higher mean is the spike regime. A day is labelled a spike when its
    posterior probability of belonging to that component is above **0.5**.
-4. **Cleaning and refit.** Spike days are replaced by their normal-day fit $\tilde{y}_t$, and
-   $W$, $M$ and $L$ are re-estimated on the cleaned series as in 3.1.
+4. **Cleaning and refit.** Spike days are replaced by their normal-day fit $`\tilde{y}_t`$, and
+   $`W`$, $`M`$ and $`L`$ are re-estimated on the cleaned series as in 3.1.
 5. **Spike allowance.** The forecast itself is the clean baseline. Separately, the model reports
-   the expected spike contribution $\hat{y}_t \cdot p \cdot (\bar{m} - 1)$, where $p$ is the
-   share of days flagged and $\bar{m}$ the average spike multiplier. It is meant for sizing a
+   the expected spike contribution $`\hat{y}_t \cdot p \cdot (\bar{m} - 1)`$, where $`p`$ is the
+   share of days flagged and $`\bar{m}`$ the average spike multiplier. It is meant for sizing a
    buffer, not for the point forecast.
 
 ### 3.3 Version 3: + holiday effects
@@ -137,28 +160,33 @@ rows up to the forecast origin.
 - **Excluding holiday windows.** Holiday windows are left out of the mixture fit and treated
   like spikes during cleaning, so pre-holiday surges aren't mistaken for random spikes and
   holidays don't distort the baseline.
-- **Effects.** For each window position $k$ (tier and offset), the effect is estimated from
+- **Effects.** For each window position $`k`$ (tier and offset), the effect is estimated from
   history as the median ratio of actual to normal-day fit, shrunk toward 1 when there are few
   past occurrences:
 
-  $$\hat{h}_k = 1 + \frac{n_k}{n_k + \kappa}\left(\operatorname{median}_{t \in k} \frac{y_t}{\tilde{y}_t} - 1\right), \qquad \kappa = 1$$
+```math
+\hat{h}_k = 1 + \frac{n_k}{n_k + \kappa}\left(\operatorname{median}_{t \in k} \frac{y_t}{\tilde{y}_t} - 1\right), \qquad \kappa = 1
+```
 
-  where $n_k$ is the number of past occurrences of position $k$.
-- **Forecast:** $\hat{y}_t = L \cdot W \cdot M \cdot \hat{h}_{k(t)}$, with $\hat{h} = 1$
+where $`n_k`$ is the number of past occurrences of position $`k`$.
+
+- **Forecast:** $`\hat{y}_t = L \cdot W \cdot M \cdot \hat{h}_{k(t)}`$, with $`\hat{h} = 1`$
   outside holiday windows.
 
 ### 3.4 Version 4: Prophet + Fourier seasonality + holidays
 
 A different model family, fitted with `prophet` on log volume over the last **3 years**:
 
-$$\log y_t = g(t) + \sum_{P} s_P(t) + h(t) + e_t$$
+```math
+\log y_t = g(t) + \sum_{P} s_P(t) + h(t) + e_t
+```
 
-- **Trend $g(t)$:** Prophet's piecewise-linear trend.
-- **Seasonalities $s_P(t)$:** Fourier series,
-  $s_P(t) = \sum_{n=1}^{N} \left[a_n \cos\frac{2\pi n t}{P} + b_n \sin\frac{2\pi n t}{P}\right]$,
-  with these periods $P$ and orders $N$:
+- **Trend $`g(t)`$:** Prophet's piecewise-linear trend.
+- **Seasonalities $`s_P(t)`$:** Fourier series,
+  $`s_P(t) = \sum_{n=1}^{N} \left[a_n \cos\frac{2\pi n t}{P} + b_n \sin\frac{2\pi n t}{P}\right]`$,
+  with these periods $`P`$ and orders $`N`$:
 
-  | Seasonality | Period $P$ (days) | Order $N$ |
+  | Seasonality | Period $`P`$ (days) | Order $`N`$ |
   |---|---|---|
   | Weekly | 7 | 3 |
   | Biweekly | 14 | 7 |
@@ -168,10 +196,10 @@ $$\log y_t = g(t) + \sum_{P} s_P(t) + h(t) + e_t$$
   With order 7, the 14-day series can represent any repeating shape over the 14-day cycle,
   including a sharp peak on one day. So the payroll Fridays are learned as seasonality and
   forecast.
-- **Holidays $h(t)$:** the same calendar, passed to Prophet by tier. Major holidays use a
+- **Holidays $`h(t)`$:** the same calendar, passed to Prophet by tier. Major holidays use a
   window from −3 to +1 days, minor ones from 0 to +1. Prophet learns one effect per tier and
   offset.
-- **Forecast:** $\hat{y}_t = \exp(\widehat{\log y_t})$. This is a median-type forecast, which
+- **Forecast:** $`\hat{y}_t = \exp(\widehat{\log y_t})`$. This is a median-type forecast, which
   suits MAE.
 
 ### 3.5 Version 5: Prophet + Fourier + GMM
@@ -214,22 +242,22 @@ first one in this order wins:
 
 ### 4.3 Metrics
 
-Accuracy is measured per corridor-day, with error $e_t = y_t - \hat{y}_t$, where a positive
+Accuracy is measured per corridor-day, with error $`e_t = y_t - \hat{y}_t`$, where a positive
 error is a shortfall:
 
-- **MAE** $= \overline{|e_t|}$, **MSE** $= \overline{e_t^2}$, **RMSE** $= \sqrt{\text{MSE}}$,
+- **MAE** $`= \overline{|e_t|}`$, **MSE** $`= \overline{e_t^2}`$, **RMSE** $`= \sqrt{\text{MSE}}`$,
   overall and for each day type.
-- **Bias** on normal days: $\overline{\hat{y}_t / y_t - 1}$.
+- **Bias** on normal days: $`\overline{\hat{y}_t / y_t - 1}`$.
 
 Dollar metrics are computed on the **daily total across corridors**, since that is what treasury
 funds:
 
-- **Required buffer** $B = Q_{0.95}\left(\max(Y_t - \hat{Y}_t, 0)\right)$: the cash to hold on
+- **Required buffer** $`B = Q_{0.95}\left(\max(Y_t - \hat{Y}_t, 0)\right)`$: the cash to hold on
   top of the forecast to cover shortfalls on 95% of days.
-- **Cash held** $= \overline{\hat{Y}_t} + B$: the like-for-like cost of 95% protection. The
+- **Cash held** $`= \overline{\hat{Y}_t} + B`$: the like-for-like cost of 95% protection. The
   buffer alone rewards a forecast that is biased high, because the bias acts as a hidden
   cushion. Cash held doesn't.
-- **Idle-cash cost** $= \overline{\max(\hat{Y}_t - Y_t, 0)} \times 5\%$ per year: the
+- **Idle-cash cost** $`= \overline{\max(\hat{Y}_t - Y_t, 0)} \times 5\%`$ per year: the
   annualized cost of over-funding.
 
 MAPE is not reported. Accuracy is compared in dollars, and the dollar metrics already capture
