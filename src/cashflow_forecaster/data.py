@@ -3,9 +3,12 @@
 Each corridor (US -> receiving country) is simulated multiplicatively from known parts,
 and every true part is kept in its own column so tests can check recovery:
 
-    volume = trend x weekday x month_position x annual x holiday x spike x noise
+    volume = trend x weekday x month_position x annual x holiday x scheduled x spike x noise
 
-The first five parts are the Project 1 generator; spikes and holidays are new here.
+The first five parts are the Project 1 generator. New here:
+- random spikes: irregular large-flow days, a separate regime (unpredictable);
+- scheduled spikes: a biweekly payroll run every other Friday (predictable, periodic);
+- holidays in the receiving country.
 """
 
 from __future__ import annotations
@@ -29,6 +32,10 @@ CORRIDORS = {
 # Spikes: ~3 a month per corridor, 1.5-3x normal volume, independent of the calendar.
 SPIKE_PROB = 3 / 30.44
 SPIKE_RANGE = (1.5, 3.0)
+
+# Scheduled spikes: a biweekly payroll run, every other Friday from this date.
+SCHEDULED_FIRST = "2021-01-08"
+SCHEDULED_FACTOR = 1.6
 
 # True multiplicative holiday effects by (tier, offset from the holiday).
 TRUE_HOLIDAY_EFFECTS = {
@@ -84,6 +91,8 @@ def generate_corridor(
     keys = list(zip(window["holiday_tier"], window["holiday_offset"]))
     holiday = np.array([TRUE_HOLIDAY_EFFECTS.get(k, 1.0) for k in keys])
 
+    is_scheduled = ((dates - pd.Timestamp(SCHEDULED_FIRST)).days % 14 == 0)
+    scheduled = np.where(is_scheduled, SCHEDULED_FACTOR, 1.0)
     is_spike = rng.random(len(dates)) < SPIKE_PROB
     spike = np.where(is_spike, rng.uniform(*SPIKE_RANGE, size=len(dates)), 1.0)
     noise = rng.lognormal(0.0, NOISE_SIGMA, size=len(dates))
@@ -97,16 +106,18 @@ def generate_corridor(
             "month_factor": month_position_effect(dates),
             "annual_factor": annual_effect(dates),
             "holiday_factor": holiday,
+            "scheduled_factor": scheduled,
             "spike_factor": spike,
             "noise": noise,
             "is_spike": is_spike,
+            "is_scheduled": is_scheduled,
             "holiday_name": window["holiday_name"].to_numpy(),
             "holiday_tier": window["holiday_tier"].to_numpy(),
             "holiday_offset": window["holiday_offset"].to_numpy(),
         }
     )
     parts = ["trend", "weekday_factor", "month_factor", "annual_factor", "holiday_factor",
-             "spike_factor", "noise"]
+             "scheduled_factor", "spike_factor", "noise"]
     out.insert(2, "volume", out[parts].prod(axis=1))
     return out
 
@@ -161,9 +172,12 @@ def load_treasury_withdrawals(start: str = "2021-01-01", end: str | None = None)
     out = raw.groupby("record_date", as_index=False)["amount"].sum()
     out.columns = ["date", "volume"]
     out["date"] = pd.to_datetime(out["date"])
+    # A few early-2021 days net to zero or below (accounting adjustments); models work in logs.
+    out = out[out["volume"] > 0].reset_index(drop=True)
     out.insert(1, "corridor", "US")
     window = holiday_window(pd.DatetimeIndex(out["date"]), "US")
     for col in window.columns:
         out[col] = window[col].to_numpy()
     out["is_spike"] = np.nan  # unknown on real data
+    out["is_scheduled"] = np.nan
     return out.sort_values("date").reset_index(drop=True)
