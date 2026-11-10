@@ -68,7 +68,8 @@ def main() -> None:
 
     ladder = ladder_table(bt)
     ladder.to_csv(out_dir / "results.csv", index=False, float_format="%.2f")
-    bt.to_csv(out_dir / "backtest_forecasts.csv.gz", index=False, float_format="%.2f")
+    bt.to_csv(out_dir / "backtest_forecasts.csv.gz", index=False, float_format="%.2f",
+              compression={"method": "gzip", "mtime": 0})  # no timestamp: same data, same file
 
     plots.plot_accuracy_steps(ladder, HEADLINE_HORIZON, fig_dir / "accuracy_steps.png")
     plots.plot_ladder(ladder, HEADLINE_HORIZON, fig_dir / "model_ladder.png")
