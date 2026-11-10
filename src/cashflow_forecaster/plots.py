@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import sys
+
 import matplotlib
 
-matplotlib.use("Agg")
+if "ipykernel" not in sys.modules:  # headless for scripts and CI; keep Jupyter's inline backend
+    matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
@@ -38,10 +41,13 @@ def _money(ax, axis: str = "y", unit: str = "M") -> None:
     (ax.yaxis if axis == "y" else ax.xaxis).set_major_formatter(fmt)
 
 
-def _save(fig, path: Path) -> Path:
+def _save(fig, path: Path | None):
+    """Save to `path` and return it; with path=None return the figure (for notebooks)."""
+    plt.close(fig)
+    if path is None:
+        return fig
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=160, bbox_inches="tight")
-    plt.close(fig)
     return path
 
 
