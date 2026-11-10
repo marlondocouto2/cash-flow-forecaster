@@ -151,7 +151,7 @@ def plot_residual_gmm(model, path: Path, title: str) -> Path:
     fig, ax = plt.subplots(figsize=(11, 4))
     bins = np.linspace(r.min() - 0.05, r.max() + 0.05, 80)
     ax.hist(r, bins=bins, color="#c9c8c2", edgecolor=SURFACE, linewidth=0.5, zorder=2,
-            label="Residuals (non-holiday days)")
+            label="Residuals (holiday windows excluded)" if on_cal.any() else "Residuals (all days)")
     grid = np.linspace(bins[0], bins[-1], 600)
     width = bins[1] - bins[0]
     gmm = model.gmm_
