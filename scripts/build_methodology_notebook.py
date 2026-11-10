@@ -28,9 +28,19 @@ def _relink(text: str) -> str:
     return re.sub(r"\]\(([^)]+)\)", fix, text)
 
 
+def _jupyter_math(text: str) -> str:
+    """GitHub's math-safe syntax -> the $...$ / $$...$$ syntax Jupyter understands.
+
+    METHODOLOGY.md uses $`...`$ and ```math blocks because GitHub otherwise reads the
+    underscores in subscripts as italics before rendering the math.
+    """
+    text = re.sub(r"(?m)^([ \t]*)```math\n\1(.+?)\n\1```[ \t]*$", r"\1$$\2$$", text)
+    return re.sub(r"\$`(.+?)`\$", r"$\1$", text)
+
+
 def build_notebook(markdown: str) -> dict:
     """Split the document at level-2 headings into markdown cells."""
-    sections = re.split(r"\n(?=## )", _relink(markdown).strip() + "\n")
+    sections = re.split(r"\n(?=## )", _jupyter_math(_relink(markdown)).strip() + "\n")
     cells = [
         {"cell_type": "markdown", "id": f"section-{i:02d}", "metadata": {},
          "source": section.rstrip("\n").splitlines(True)}
