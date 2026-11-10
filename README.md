@@ -131,7 +131,7 @@ days ahead. That gives 1,095 scored corridor-days per version and horizon. Code:
 |---|---|---|
 | **2. + Spike GMM** | Random spikes inflated the baseline, which ran **13% high on ordinary days**. | Bias falls to +3%; normal-day error falls from $5.07M to $2.98M. |
 | **3. + Holidays** | The baseline predicted an ordinary day before Mother's Day. | Holiday-window error falls from $15.4M to $9.5M. |
-| **4. Prophet + Fourier** | Payroll Fridays were invisible to a weekday pattern. Removing them as "spikes" in steps 2–3 made it worse. | Scheduled-spike error falls from $15.4M to $6.2M. |
+| **4. Prophet + Fourier** | A weekday factor can't tell payroll Fridays from ordinary ones, so it averages them (Friday ×1.57 against a true ×1.29). Payroll Fridays are under-forecast, ordinary Fridays over-forecast, and the lower, cleaner level of steps 2–3 makes the shortfall worse. | Scheduled-spike error falls from $15.4M to $6.2M. |
 | **5. + GMM on Prophet** | Random spikes now inflated Prophet's fit instead: +8% on ordinary days. | Bias falls to +0.5%; normal-day error is $1.98M, the lowest of any version. |
 
 One day shows it well. The day before Mother's Day 2025 was also a payroll Friday, with
