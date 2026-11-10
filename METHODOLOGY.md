@@ -141,7 +141,7 @@ rows up to the forecast origin.
 ### 3.2 Version 2: + spike decomposition with a Gaussian mixture
 
 1. **Normal-day fit.** For each past day, estimate what a normal day would have been:
-   $`\tilde{y}_t = \operatorname{median}_{28}(y / (W M))_t \cdot W_t M_t`$. This is a centred
+   $`\tilde{y}_t = \mathrm{median}_{28}(y / (W M))_t \cdot W_t M_t`$. This is a centred
    28-day rolling *median* of the deseasonalized series times the seasonal factors. The median
    keeps spikes from pulling it up.
 2. **Residuals.** $`r_t = \log y_t - \log \tilde{y}_t`$, over the last **730 days**.
@@ -165,7 +165,7 @@ rows up to the forecast origin.
   past occurrences:
 
 ```math
-\hat{h}_k = 1 + \frac{n_k}{n_k + \kappa}\left(\operatorname{median}_{t \in k} \frac{y_t}{\tilde{y}_t} - 1\right), \qquad \kappa = 1
+\hat{h}_k = 1 + \frac{n_k}{n_k + \kappa}\left(\mathrm{median}_{t \in k} \frac{y_t}{\tilde{y}_t} - 1\right), \qquad \kappa = 1
 ```
 
 where $`n_k`$ is the number of past occurrences of position $`k`$.
