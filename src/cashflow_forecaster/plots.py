@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 
 import matplotlib
+import matplotlib.transforms  # noqa: F401  (used for band labels)
 
 if "ipykernel" not in sys.modules:  # headless for scripts and CI; keep Jupyter's inline backend
     matplotlib.use("Agg")
@@ -23,6 +24,7 @@ COLORS = dict(zip(VERSIONS, ["#eb6834", "#1baf7a", "#2a78d6", "#eda100", "#6250d
 SHORT = dict(zip(VERSIONS, ["Baseline", "+ Spike\nGMM", "+ Holidays", "Prophet +\nFourier",
                             "Prophet +\nFourier + GMM"]))
 INK, INK_2, GRID, SURFACE = "#0b0b0b", "#52514e", "#e6e5e1", "#fcfcfb"
+WINDOW, HOLIDAY = "#efede7", "#d6d3ca"  # holiday-window shading: light around, darker on the day
 
 plt.rcParams.update({
     "figure.facecolor": SURFACE, "axes.facecolor": SURFACE, "savefig.facecolor": SURFACE,
@@ -132,14 +134,53 @@ def plot_zoom(bt: pd.DataFrame, panels: list[tuple[str, str, str, str]], horizon
         for v in versions:
             f = s[s["model"] == v].set_index("date")["forecast"]
             ax.plot(f.index, f.values, color=COLORS[v], lw=2, label=v, zorder=3)
-        mark = actual["holiday_offset"] == 0 if shade == "holiday" else \
-            actual["is_scheduled"].fillna(False).astype(bool)
-        for d in actual.index[mark.to_numpy()]:
-            ax.axvspan(d - pd.Timedelta(hours=12), d + pd.Timedelta(hours=12), color=GRID, zorder=0)
+        # Random spikes can't be forecast by any version: ring them so misses read as expected.
+        spikes = actual[actual["is_spike"].fillna(False).astype(bool)] if "is_spike" in actual else actual.iloc[:0]
+        ax.scatter(spikes.index, spikes["actual"], s=110, facecolors="none", edgecolors="#e34948",
+                   linewidths=1.6, zorder=5, label="Random spike (not forecastable)")
+        half = pd.Timedelta(hours=12)
+        if shade == "holiday":
+            # The whole window: a light band for the days around the holiday (surge before,
+            # catch-up after) and a darker band for the holiday itself (the drop).
+            offset = actual["holiday_offset"]
+            top = matplotlib.transforms.blended_transform_factory(ax.transData, ax.transAxes)
+            for i, d in enumerate(actual.index[(offset.notna() & (offset != 0)).to_numpy()]):
+                ax.axvspan(d - half, d + half, color=WINDOW, zorder=0,
+                           label="Days before / after holiday" if i == 0 else None)
+            for i, d in enumerate(actual.index[(offset == 0).to_numpy()]):
+                ax.axvspan(d - half, d + half, color=HOLIDAY, zorder=0,
+                           label="Holiday" if i == 0 else None)
+                ax.text(d, 0.98, "drop", transform=top, ha="center", va="top", fontsize=8, color=INK_2)
+                before = offset[(offset < 0) & (offset.index < d) & (offset.index >= d - pd.Timedelta(days=3))]
+                if len(before):
+                    mid = before.index.min() + (before.index.max() - before.index.min()) / 2
+                    ax.text(mid, 0.98, "surge", transform=top, ha="center", va="top",
+                            fontsize=8, color=INK_2)
+        else:
+            mark = actual["is_scheduled"].fillna(False).astype(bool)
+            for i, d in enumerate(actual.index[mark.to_numpy()]):
+                ax.axvspan(d - half, d + half, color=HOLIDAY, zorder=0,
+                           label="Payroll Friday" if i == 0 else None)
         ax.set_title(title)
-        ax.xaxis.set_major_formatter(matplotlib.dates.DateFormatter("%b %d"))
+        # Label every day on short windows (and every Friday on long ones), so the shaded day
+        # always sits on a labelled tick.
+        days = (pd.Timestamp(end) - pd.Timestamp(start)).days
+        if days <= 16:
+            ax.xaxis.set_major_locator(matplotlib.dates.DayLocator())
+            ax.xaxis.set_major_formatter(matplotlib.dates.DateFormatter("%d\n%a"))
+            ax.set_xlabel(f"{pd.Timestamp(start):%B %Y}")
+        else:
+            ax.xaxis.set_major_locator(matplotlib.dates.WeekdayLocator(byweekday=matplotlib.dates.FR))
+            ax.xaxis.set_major_formatter(matplotlib.dates.DateFormatter("%b %d\n%a"))
+        ax.tick_params(axis="x", labelsize=8.5)
         _money(ax)
-    axes[0][0].legend(loc="upper left", ncols=4, bbox_to_anchor=(0, -0.1))
+    handles, labels = axes[0][0].get_legend_handles_labels()
+    for a in axes[0][1:]:  # a band or spike that only appears in a later panel
+        for h, lab in zip(*a.get_legend_handles_labels()):
+            if lab not in labels:
+                handles.append(h)
+                labels.append(lab)
+    axes[0][0].legend(handles, labels, loc="upper left", ncols=3, bbox_to_anchor=(0, -0.2))
     return _save(fig, path)
 
 
