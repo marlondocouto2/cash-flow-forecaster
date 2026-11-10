@@ -190,8 +190,9 @@ prints what each version adds, writes `reports/results.csv` and every forecast i
 - **Some versions only:** `--versions 1,3,5`.
 - **Public data:** `--source treasury` (needs internet; results go to `reports/treasury/`).
 
-Settings are in [`config.py`](src/cashflow_forecaster/config.py). For a guided tour, see
-[`notebooks/walkthrough.ipynb`](notebooks/walkthrough.ipynb).
+Settings are in [`config.py`](src/cashflow_forecaster/config.py). For a guided tour with charts, see
+[`notebooks/walkthrough.ipynb`](notebooks/walkthrough.ipynb). GitHub shows it with its saved outputs; to
+run it yourself, `pip install jupyter` first.
 
 ### Tests
 
