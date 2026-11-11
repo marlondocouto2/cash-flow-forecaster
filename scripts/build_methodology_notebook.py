@@ -34,6 +34,10 @@ def _jupyter_math(text: str) -> str:
     METHODOLOGY.md uses $`...`$ and ```math blocks because GitHub otherwise reads the
     underscores in subscripts as italics before rendering the math.
     """
+    # Currency amounts are escaped as \$ in the .md. Notebook viewers (GitHub's, PyCharm's) don't all
+    # honour that escape and would pair a dollar sign with the next formula, so write "USD" instead.
+    text = re.sub(r"\\\$ ?(?=\w)", "USD ", text)  # "\$10M" -> "USD 10M", "\$ millions" -> "USD millions"
+    text = text.replace("\\$", "USD")                  # "to \$." -> "to USD."
     text = re.sub(r"(?m)^([ \t]*)```math\n\1(.+?)\n\1```[ \t]*$", r"\1$$\2$$", text)
     return re.sub(r"\$`(.+?)`\$", r"$\1$", text)
 
