@@ -205,3 +205,47 @@ def test_final_model_beats_step_3_in_a_short_backtest(flows):
     t = ladder_table(bt).set_index("model")
     assert t.at["5. Prophet + Fourier + GMM", "MAE"] < t.at["3. + Holidays", "MAE"]
     assert t.at["5. Prophet + Fourier + GMM", "MAE_scheduled"] < 0.6 * t.at["3. + Holidays", "MAE_scheduled"]
+
+
+# ----------------------------------------------------------------- version 6: Chronos-2
+class _RecordingPipeline:
+    """Stands in for Chronos-2: records each input and forecasts the last observed value."""
+
+    def __init__(self):
+        self.inputs = []
+
+    def predict_quantiles(self, inputs, prediction_length, quantile_levels, **kwargs):
+        import torch
+
+        self.inputs.extend(inputs)
+        median = [torch.full((1, prediction_length), float(x["target"][-1])) for x in inputs]
+        return None, median
+
+
+def test_chronos_sees_only_history_and_calendar_facts(flows, monkeypatch):
+    from cashflow_forecaster import foundation
+
+    stub = _RecordingPipeline()
+    monkeypatch.setattr(foundation, "load_pipeline", lambda: stub)
+    mx = flows[flows["corridor"] == "MX"]
+    bt = foundation.chronos_backtest(mx, horizons=(1, 7), test_periods=30)
+    y = mx.sort_values("date")["volume"].to_numpy()
+    first_origin = len(y) - 30 - 7
+    for i, item in enumerate(stub.inputs):
+        origin = first_origin + i
+        np.testing.assert_array_equal(item["target"], y[: origin + 1])  # history up to the origin only
+        assert set(item["future_covariates"]) == {"weekday", "month_position", "holiday_window"}
+        assert all(len(v) == 7 for v in item["future_covariates"].values())
+        assert all(len(v) == origin + 1 for v in item["past_covariates"].values())
+    # Same output shape as the other versions' walk-forward, and forecasts made before the target.
+    assert set(bt.columns) >= {"corridor", "model", "origin", "date", "horizon", "forecast", "actual", "error"}
+    assert (bt["origin"] < bt["date"]).all() and len(bt) == 60
+
+
+def test_chronos_calendar_covariates_mark_holidays():
+    from cashflow_forecaster.foundation import calendar_covariates
+
+    dates = pd.date_range("2025-05-07", "2025-05-11")
+    cov = calendar_covariates(dates, "MX")
+    assert list(cov["holiday_window"]) == ["major:-3", "major:-2", "major:-1", "major:0", "major:1"]
+    assert cov["weekday"][0] == "Wednesday" and cov["month_position"][0] == "d04_13"

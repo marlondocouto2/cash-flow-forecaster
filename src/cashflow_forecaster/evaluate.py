@@ -66,8 +66,10 @@ def backtest_all(
     test_periods: int = CONFIG.backtest_days, versions: Sequence[int] | None = None,
     n_jobs: int | None = None,
 ) -> pd.DataFrame:
-    """Run the chosen ladder versions on every corridor (in parallel) and label day types.
+    """Run the chosen versions on every corridor (in parallel) and label day types.
 
+    `versions` defaults to the ladder (1-5). Version 6, Chronos-2, runs only when asked for,
+    in one batched pass per corridor (it needs the optional `chronos-forecasting` package).
     Day type of each target day: holiday window > random spike > scheduled spike > normal.
     """
     horizons = tuple(horizons)
@@ -76,12 +78,16 @@ def backtest_all(
         g = g[["date", "volume"]].sort_values("date").reset_index(drop=True)
         for factory in model_ladder(corridor, versions):
             tasks.append((corridor, g, factory, horizons, test_periods))
-    n_jobs = n_jobs or min(len(tasks), os.cpu_count() or 1)
-    if n_jobs > 1:
+    n_jobs = n_jobs or max(1, min(len(tasks), os.cpu_count() or 1))
+    frames = []
+    if tasks and n_jobs > 1:
         with ProcessPoolExecutor(n_jobs) as pool:
             frames = list(pool.map(_run, tasks))
-    else:
+    elif tasks:
         frames = [_run(t) for t in tasks]
+    if versions and 6 in versions:
+        from .foundation import chronos_backtest
+        frames.append(chronos_backtest(flows, horizons, test_periods))
     bt = pd.concat(frames, ignore_index=True)
 
     cols = ["corridor", "date", "is_spike", "is_scheduled", "holiday_tier", "holiday_offset"]
@@ -142,6 +148,8 @@ def ladder_table(bt: pd.DataFrame) -> pd.DataFrame:
     by_h = out.groupby("horizon")
     # How much each version adds: MAE change vs the previous version and vs the baseline.
     out["MAE_vs_previous_pct"] = (by_h["MAE"].pct_change() * 100).round(1)
+    # Chronos-2 (version 6) is a different family, not a step on the ladder: no "vs previous".
+    out.loc[out["model"].str.startswith("6."), "MAE_vs_previous_pct"] = np.nan
     out["MAE_vs_baseline_pct"] = ((out["MAE"] / by_h["MAE"].transform("first") - 1) * 100).round(1)
     base = by_h["idle_cash_cost_per_year"].transform("first")
     out["idle_cash_saving_vs_baseline"] = base - out["idle_cash_cost_per_year"]
