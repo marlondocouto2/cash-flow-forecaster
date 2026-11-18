@@ -302,11 +302,13 @@ class ProphetFourier(BaseModel):
 
 
 VERSION_NAMES = ["1. Baseline", "2. + Spike GMM", "3. + Holidays", "4. Prophet + Fourier",
-                 "5. Prophet + Fourier + GMM"]
+                 "5. Prophet + Fourier + GMM", "6. Chronos-2 (zero-shot)"]
+LADDER_VERSIONS = (1, 2, 3, 4, 5)  # version 6 (Chronos-2, see foundation.py) runs separately
 
 
 def model_ladder(country: str, versions: Sequence[int] | None = None) -> list:
-    """Picklable factories for the ladder versions (1-5), in order."""
+    """Picklable factories for the ladder versions (1-5), in order. Version 6 is not a
+    per-origin model fit; `evaluate.backtest_all` runs it in batch via `foundation.py`."""
     factories = {
         1: partial(SeasonalWeekday),
         2: partial(SpikeAdjusted),
@@ -314,4 +316,4 @@ def model_ladder(country: str, versions: Sequence[int] | None = None) -> list:
         4: partial(ProphetFourier, country=country),
         5: partial(ProphetFourier, country=country, clean_spikes=True),
     }
-    return [factories[v] for v in (versions or sorted(factories))]
+    return [factories[v] for v in (versions or sorted(factories)) if v in factories]

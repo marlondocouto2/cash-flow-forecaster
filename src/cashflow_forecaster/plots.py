@@ -20,9 +20,9 @@ from .models import VERSION_NAMES  # noqa: E402
 
 # Fixed colour per model version (colour follows the entity, never its rank).
 VERSIONS = VERSION_NAMES
-COLORS = dict(zip(VERSIONS, ["#eb6834", "#1baf7a", "#2a78d6", "#eda100", "#6250d6"]))
+COLORS = dict(zip(VERSIONS, ["#eb6834", "#1baf7a", "#2a78d6", "#eda100", "#6250d6", "#8a8984"]))
 SHORT = dict(zip(VERSIONS, ["Baseline", "+ Spike\nGMM", "+ Holidays", "Prophet +\nFourier",
-                            "Prophet +\nFourier + GMM"]))
+                            "Prophet +\nFourier + GMM", "Chronos-2\n(zero-shot)"]))
 INK, INK_2, GRID, SURFACE = "#0b0b0b", "#52514e", "#e6e5e1", "#fcfcfb"
 WINDOW, HOLIDAY = "#efede7", "#d6d3ca"  # holiday-window shading: light around, darker on the day
 
@@ -81,10 +81,11 @@ def plot_accuracy_steps(ladder: pd.DataFrame, horizon: int, path: Path) -> Path:
     return _save(fig, path)
 
 
-def plot_ladder(ladder: pd.DataFrame, horizon: int, path: Path) -> Path:
+def plot_ladder(ladder: pd.DataFrame, horizon: int, path: Path,
+                versions: list[str] | None = None, title: str | None = None) -> Path:
     """Error by model version and day type, plus the annual idle-cash cost."""
     t = ladder[ladder["horizon"] == horizon].set_index("model")
-    versions = _present(ladder)
+    versions = [v for v in (versions or _present(ladder)) if v in t.index]
     groups = [(c, g) for c, g in [("MAE", "All days"), ("MAE_normal", "Normal days"),
                                   ("MAE_spike", "Random spikes"),
                                   ("MAE_scheduled", "Scheduled spikes"),
@@ -99,7 +100,7 @@ def plot_ladder(ladder: pd.DataFrame, horizon: int, path: Path) -> Path:
                label=v, zorder=2)
     ax.set_xticks(x, [g for _, g in groups])
     ax.tick_params(axis="x", length=0)
-    ax.set_title(f"Average error per corridor-day by type of day, {horizon} days ahead")
+    ax.set_title(title or f"Average error per corridor-day by type of day, {horizon} days ahead")
     _money(ax)
     ax.legend(ncols=3, loc="upper left", bbox_to_anchor=(0, -0.08))
 
@@ -109,7 +110,7 @@ def plot_ladder(ladder: pd.DataFrame, horizon: int, path: Path) -> Path:
         ax2.annotate(f"${val / 1e3:,.0f}k", (b.get_x() + b.get_width() / 2, val),
                      xytext=(0, 2), textcoords="offset points", ha="center", fontsize=8.5,
                      color=INK)
-    ax2.set_xticks(range(len(versions)), [str(i + 1) for i in range(len(versions))])
+    ax2.set_xticks(range(len(versions)), [v.split(".")[0] for v in versions])
     ax2.tick_params(axis="x", length=0)
     ax2.set_xlabel("Version")
     ax2.set_title("Idle-cash cost per year")

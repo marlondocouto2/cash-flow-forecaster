@@ -214,6 +214,23 @@ The order matters. Prophet's seasonality already explains the payroll Fridays, s
 look unusual in its residuals and the mixture leaves them alone. In Mexico it flags 0 of 69
 payroll Fridays. Only spikes the seasonality can't explain are removed.
 
+### 3.6 Version 6 (follow-up): Chronos-2, zero-shot
+
+Added after the project as a follow-up to research on time series foundation models.
+[Chronos-2](https://arxiv.org/abs/2510.15821) (Amazon, 2025) is a 120M-parameter model
+pretrained on many real and synthetic series. It is not a step on the ladder, but a different
+family:
+
+1. **No fitting.** At each origin, the model reads the corridor's full history up to and
+   including the origin.
+2. **Calendar covariates.** It gets known-future covariates for the history and the next 30
+   days: weekday, the day-of-month bucket from Project 1, and the holiday window key (for
+   example `major:-2`). Its group attention lets them inform the target in context. It never
+   sees spike or payroll labels.
+3. **Output.** The forecast is the median of its quantile forecasts.
+4. **Batched backtest.** All origins of a corridor are forecast in one batched call, on the same
+   origins and targets as the walk-forward in 4.1.
+
 ## 4. Evaluation design
 
 ### 4.1 Walk-forward backtest
@@ -301,6 +318,7 @@ Walk-forward, 7 days ahead. Daily totals average \$111M.
 | 3. + Holidays | \$6.87M | −9.6% | \$2.77M | \$38.8M | \$15.4M | \$9.5M | +2.8% | \$170.7M | \$183k |
 | 4. Prophet + Fourier | \$6.37M | −7.3% | \$3.15M | \$36.1M | \$6.2M | \$9.1M | +8.1% | \$165.5M | \$290k |
 | 5. Prophet + Fourier + GMM | \$5.50M | −13.8% | \$1.98M | \$38.3M | \$4.3M | \$8.9M | +0.5% | \$164.2M | \$105k |
+| 6. Chronos-2 (zero-shot) | \$6.61M | | \$2.47M | \$39.3M | \$10.2M | \$12.0M | | \$167.6M | \$115k |
 
 **How to read it:**
 
@@ -312,12 +330,18 @@ Walk-forward, 7 days ahead. Daily totals average \$111M.
 - **Random spike days don't improve in any version.** They are unpredictable by construction.
   Cleaning the level even makes them slightly worse, because an inflated level happened to sit
   closer to them.
+- **Chronos-2, with no tuning, lands between versions 3 and 4.** It does well on normal days. On
+  holiday windows it is weak, since five years hold too few of each holiday to learn its effect in
+  context. Without the calendar covariates it is better on payroll Fridays (\$7.2M) but worse on
+  holidays (\$15.1M), so overall they cancel out.
 - **The cash-held saving is real.** From version 1 to version 5, the same 95% protection needs
   \$10.5M less cash a day.
 
 **Real data:** on U.S. Treasury withdrawals over the 12 months to November 2026, versions 2–3
-are about 5% *worse* than the baseline. Version 4 is 12.5% better than version 3, and version
-5 ends 9.7% below the baseline. The Treasury's large days are mostly scheduled (tax dates,
+are about 5% *worse* than the baseline. Version 4 is 12.9% better than version 3, and version
+5 ends 8.4% below the baseline. Chronos-2 is the best version 1 day ahead (18.4% below the
+baseline, against 10.8% for version 5). It ties at 7 days and is weaker at 30 days (3.7% below).
+Treasury data are public, so it may have seen some of them in pretraining. The Treasury's large days are mostly scheduled (tax dates,
 benefit payments), so treating them as random spikes hurts, and representing them as
 seasonality helps. This matches the synthetic finding.
 
@@ -340,8 +364,8 @@ seasonality helps. This matches the synthetic finding.
 
 ```bash
 pip install -r requirements.txt
-python scripts/run_pipeline.py      # all five versions, about a minute
-pytest                              # about 45 seconds
+python scripts/run_pipeline.py      # all six versions, about 5 minutes (first run downloads Chronos-2)
+pytest                              # about 45 seconds; Chronos-2 is replaced by a stand-in
 ```
 
 Seeds, windows and horizons are set in [`config.py`](src/cashflow_forecaster/config.py), and

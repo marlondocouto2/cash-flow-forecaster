@@ -1,7 +1,7 @@
 """One command: generate data -> fit every model version -> backtest -> figures and results.
 
-    python scripts/run_pipeline.py                     # all 5 versions, synthetic data (~1 min)
-    python scripts/run_pipeline.py --versions 1,3,5    # only some versions
+    python scripts/run_pipeline.py                     # all 6 versions, synthetic data (~4 min)
+    python scripts/run_pipeline.py --versions 1,2,3,4,5   # the ladder only, no Chronos-2 (~1 min)
     python scripts/run_pipeline.py --source treasury   # U.S. Treasury withdrawals (needs network)
 """
 
@@ -33,7 +33,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--source", choices=["synthetic", "treasury"], default="synthetic")
-    parser.add_argument("--versions", default="1,2,3,4,5",
+    parser.add_argument("--versions", default="1,2,3,4,5,6",
                         help="comma-separated versions to run: " +
                              "; ".join(VERSION_NAMES))
     args = parser.parse_args()
@@ -71,10 +71,20 @@ def main() -> None:
     bt.to_csv(out_dir / "backtest_forecasts.csv.gz", index=False, float_format="%.2f",
               compression={"method": "gzip", "mtime": 0})  # no timestamp: same data, same file
 
-    plots.plot_accuracy_steps(ladder, HEADLINE_HORIZON, fig_dir / "accuracy_steps.png")
-    plots.plot_ladder(ladder, HEADLINE_HORIZON, fig_dir / "model_ladder.png")
+    # The ladder charts show versions 1-5; Chronos-2 (6) is a different family, compared separately.
+    steps = ladder[ladder["model"].isin(VERSION_NAMES[:5])]
+    plots.plot_accuracy_steps(steps, HEADLINE_HORIZON, fig_dir / "accuracy_steps.png")
+    plots.plot_ladder(steps, HEADLINE_HORIZON, fig_dir / "model_ladder.png")
     plots.plot_table(ladder, HEADLINE_HORIZON, fig_dir / "results_table.png")
     present = [v for v in VERSION_NAMES if v in set(bt["model"])]
+    chronos = VERSION_NAMES[5]
+    if chronos in present:
+        plots.plot_ladder(ladder, HEADLINE_HORIZON, fig_dir / "chronos_vs_ladder.png",
+                          versions=[VERSION_NAMES[0], VERSION_NAMES[2], VERSION_NAMES[4], chronos],
+                          title=f"Chronos-2 (zero-shot) vs the ladder, by type of day, {HEADLINE_HORIZON} days ahead")
+        if holiday_panels:
+            plots.plot_zoom(bt, holiday_panels, HEADLINE_HORIZON,
+                            [VERSION_NAMES[4], chronos], fig_dir / "chronos_zoom.png")
     compare = [v for v in (VERSION_NAMES[0], VERSION_NAMES[2], VERSION_NAMES[4]) if v in present]
     if holiday_panels:
         plots.plot_zoom(bt, holiday_panels, HEADLINE_HORIZON, compare, fig_dir / "holiday_zoom.png")
@@ -90,6 +100,9 @@ def main() -> None:
     print(f"\nWhat each version adds ({HEADLINE_HORIZON} days ahead, MAE per corridor-day):")
     for _, r in h.iterrows():
         step = "" if pd.isna(r["MAE_vs_previous_pct"]) else f"  {r['MAE_vs_previous_pct']:+.1f}% vs previous"
+        if r["model"].startswith("6."):
+            final = h.loc[h["model"] == VERSION_NAMES[4], "MAE"]
+            step = f"  {(r['MAE'] / final.iloc[0] - 1) * 100:+.1f}% vs the final model (5)" if len(final) else ""
         print(f"  {r['model']:<28} ${r['MAE'] / 1e6:6.2f}M{step}")
     show = ladder.drop(columns=["MSE"]).copy()
     money = [c for c in show.columns if c not in ("horizon", "model") and not c.endswith("_pct")]
